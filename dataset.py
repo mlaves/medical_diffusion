@@ -1,11 +1,7 @@
-"""
-Implements the diffusion denoising training dataset using MedMNISTv2.
-https://medmnist.com
-"""
-
 import os
 import numpy as np
 import torch
+from functorch import vmap
 
 
 class MedMNISTv2(torch.utils.data.Dataset):
@@ -25,7 +21,7 @@ class MedMNISTv2(torch.utils.data.Dataset):
 
         self.info = {
             "name": "chestmnist",
-            "url": "https://zenodo.org/record/6496656/files/chestmnist.npz?download=1",
+            "url": "https://zenodo.org/record/6496656/files/chestmnist.npz",
             "MD5": "02c8a6516a18b556561a56cbdd36c4a8",
         }
 
@@ -37,7 +33,13 @@ class MedMNISTv2(torch.utils.data.Dataset):
             self._data[key] = torch.from_numpy(dataset[key]).unsqueeze(1)
 
         # variance schedule
-        self._beta = torch.linspace(10e-4, 0.02, self._timesteps)
+        self._alpha_bar = self._compute_alpha_bar(self._timesteps)
+        self._beta = 1-(self._alpha_bar[1:]/self._alpha_bar[:-1])
+        self._beta = torch.cat((self._beta[0:1], self._beta)).clip(0, 0.999)
+
+        # preprocess data
+        _preprocess_vmapped = vmap(self._preprocess, in_dims=0, out_dims=0)
+        self._data[self._split] = _preprocess_vmapped(self._data[self._split])
 
     def _download(self):
         try:
@@ -51,19 +53,39 @@ class MedMNISTv2(torch.utils.data.Dataset):
         except Exception as ex:
             raise RuntimeError("Error downloading the dataset.") from ex
 
+    @staticmethod
+    def _preprocess(img):
+        img = img.float()*2/255 - 1  # scale to [-1, 1]
+        # img = torch.nn.functional.pad(img[None,], pad=(2,2,2,2), mode="reflect")[0]
+        img = torch.nn.functional.interpolate(img[None,], size=(32, 32), mode="bilinear")[0]
+        return img
+
+    @staticmethod
+    def _compute_alpha_bar(timesteps: int, s: float = 0.008, beta=None):
+        t = torch.arange(timesteps)
+        return torch.cos((t/timesteps+s)/(1+s)*np.pi/2)**2
+
+    def get_beta(self):
+        return self._beta.clone()
+
+    def get_alpha_bar(self):
+        return self._alpha_bar.clone()
+
     def __len__(self):
-        return 0
+        return self._data[self._split].shape[0]
 
     def __getitem__(self, index):
-        t = torch.randint(low=0, high=self._timesteps, size=(1,)).item()
+        t = torch.randint(low=0, high=self._timesteps, size=(1,))
         return self._get(index, t)
 
     def _get(self, index, t):
-        x_0 = self._data[self._split][index].float()
-        x_0 = x_0*2/255 - 1  # scale to [-1, 1]
-
+        x_0 = self._data[self._split][index]
         eps = torch.randn_like(x_0)
-        alpha_bar_t = torch.prod(1-self._beta[:t])
+
+        alpha_bar_t = self._alpha_bar[t]
+
         x_t = torch.sqrt(alpha_bar_t)*x_0 + torch.sqrt(1-alpha_bar_t)*eps
 
-        return x_0, x_t, eps, t, alpha_bar_t
+        alpha_t = 1 - self._beta[t]
+
+        return x_0, x_t, eps, t, alpha_t, alpha_bar_t

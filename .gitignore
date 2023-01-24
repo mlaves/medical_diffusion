@@ -132,3 +132,5 @@ dmypy.json
 literature/
 .DS_Store
 data/
+.idea/
+logs/
