@@ -4,6 +4,19 @@ import torch
 from functorch import vmap
 
 
+def positional_embedding(t, d=32):
+    """
+    Transformer positional embedding.
+    """
+    k = torch.arange(0, d//2, 1)
+    w = torch.exp(k*-np.log(10000)/d)
+
+    p = torch.empty((d,))
+    p[0::2] = torch.sin(t*w)
+    p[1::2] = torch.cos(t*w)
+    return p
+
+
 class MedMNISTv2(torch.utils.data.Dataset):
     def __init__(
             self,
@@ -61,9 +74,9 @@ class MedMNISTv2(torch.utils.data.Dataset):
         return img
 
     @staticmethod
-    def _compute_alpha_bar(timesteps: int, s: float = 0.008, beta=None):
+    def _compute_alpha_bar(timesteps: int, s: float = 0.008):
         t = torch.arange(timesteps)
-        return torch.cos((t/timesteps+s)/(1+s)*np.pi/2)**2
+        return torch.cos((t/timesteps+s)/(1+s)*np.pi/2)**2 / torch.cos((torch.tensor([0])+s)/(1+s)*np.pi/2)**2
 
     def get_beta(self):
         return self._beta.clone()
@@ -78,14 +91,14 @@ class MedMNISTv2(torch.utils.data.Dataset):
         t = torch.randint(low=0, high=self._timesteps, size=(1,))
         return self._get(index, t)
 
-    def _get(self, index, t):
+    def _get(self, index, timestep):
         x_0 = self._data[self._split][index]
         eps = torch.randn_like(x_0)
 
-        alpha_bar_t = self._alpha_bar[t]
+        alpha_bar_t = self._alpha_bar[timestep]
+        alpha_t = 1 - self._beta[timestep]
+        t_embedding = positional_embedding(timestep, d=32).repeat((1,32,1))
 
         x_t = torch.sqrt(alpha_bar_t)*x_0 + torch.sqrt(1-alpha_bar_t)*eps
 
-        alpha_t = 1 - self._beta[t]
-
-        return x_0, x_t, eps, t, alpha_t, alpha_bar_t
+        return x_0, x_t, eps, timestep, alpha_t, alpha_bar_t, t_embedding
