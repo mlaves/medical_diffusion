@@ -1,5 +1,3 @@
-from logging import critical
-from tabnanny import check
 import torch
 from tqdm import tqdm
 from fire import Fire
